@@ -1,0 +1,538 @@
+---
+title: "Pesticide"
+author: "Sofian, Baptiste, Wilfred, Souleiman"
+date: "2024-03-06"
+#output: html_document
+output: 
+  prettydoc::html_pretty:
+    theme: cayman
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, fig.width=3, fig.height=2.5,fig.pos ="ht", out.width = '50%',out.extra = "",fig.align = 'center')
+getOption('xtable.comment',TRUE)
+
+knitr::opts_chunk$set(echo = FALSE) # By default, hide code; set to TRUE to see code
+knitr::opts_chunk$set(fig.pos = 'p') # Places figures on their own pages
+knitr::opts_chunk$set(out.width = '100%', dpi=300) # Figure resolution and size
+knitr::opts_chunk$set(fig.env="figure") # Latex figure environment
+
+
+```
+
+```{r,  include=FALSE}
+library("corrplot")
+library("rstatix")
+library("ggpubr")
+library("readxl")
+library("GGally")
+library("stringr")
+library("png")
+library("jpeg")
+library("flextable")
+library("lubridate")
+library("magrittr")
+library("ggplot2")
+library("ggpubr")
+library("rticles")
+library("hrbrthemes")
+library("forcats")
+library("ggridges")
+library("cowplot")
+library("ggthemes")
+library("fmsb")
+library("wesanderson")
+library("knitr", "rmarkdown", "markdown")
+library("tidyverse")
+library("tidyr")
+library("dplyr")
+library("plotly")
+library("paletteer")
+library("extrafont")
+library("kableExtra")
+library('data.table')
+library("readxl")
+library("jtools")
+library("ggrepel")
+library("fastDummies")
+library("xtable")
+library("sjPlot")
+library("sjmisc")
+library("sjlabelled")
+library("lmtest")
+library("modelsummary")
+library("kableExtra")
+library("gt")
+library("esquisse")
+
+
+tz <- Sys.timezone()
+
+```
+
+
+# PROBLEMATIQUE
+Prédiction des quantitées des substance active achetées en fonction de ses attributs et de données climatologique.
+
+Equation à estimer:
+$$ \ log(quantite\ substance_i)=\beta_0+\beta_1\ classification_i+\beta_2\ classification\ mention\ +\beta_3\  achat\ etranger_i + \beta_4\ log(dja_i)\ + \beta_5\ tmin moyen_i + \epsilon_i $$
+$$ \ log(quantite\ substance_i)=\alpha_0+\alpha_1\ log(dja_i)+\alpha_2\ tminmoyen_i\ +\alpha_3\  tminmoyen^2_i + \omicron_i $$
+
+
+$$ \ log(quantite\ substance_i)=\beta_0+\beta_1\ log(dja_i)+\beta_2\ tminmoyen2_i\ +\beta_3\  tminmoyen2^2_i + \epsilon_i $$
+Intuitions:
+- paramètre liés à la température positif, plus la température minimal est haute, moins il y a de gel donc il
+y a bsoin de plus de produits phytosanitaires.
+- paramètre lié à la toxicité positif, plus la DJA est haute, plus on peut ingérer des substances sans effet
+néfastes, donc moins de réticence à en commandé.
+
+## DONNEES
+
+Nous allons importer nos données et construire la base de données.
+
+## Sources
+Importation des données
+
+```{r, echo=FALSE}
+data <- read_delim("data/BNVD_TRACABILITE_20221018_ACHAT_DPT_SUBSTANCE_2021.csv",  delim = ";", escape_double = FALSE, col_types = cols(quantite_substance = col_number()),  trim_ws = TRUE)
+```
+
+La base de données contient 108822 observations et 10 variables. Il s'agit du récapitulatif d'achat de produit agricole en France en 2021. 
+
+## Construction de la base de données
+
+```{r}
+print(unique(data$code_departement))
+```
+
+```{r}
+datasummary_skim(data, "categorical", output = "default")
+datasummary_skim(data)
+
+
+```
+
+On transforme les variables "classification_mention" et "classification" en variable numérique, 
+
+```{r, echo=FALSE}
+data["classification_mention"][is.na(data["classification_mention"])] <- "0"
+data$classification_mention = str_replace(data$classification_mention, "Substitution", "2.5")
+data$classification_mention = str_replace(data$classification_mention, "Exclusion", "5")
+
+data$classification = str_replace(data$classification, "CMR", "9")
+data$classification = str_replace(data$classification, "Santé A", "5.1")
+data$classification = str_replace(data$classification, "Env A", "3")
+data$classification = str_replace(data$classification, "Env B", "0.9")
+data$classification = str_replace(data$classification, "Autre", "0")
+data$classification_mention = type.convert(data$classification_mention, as.is=TRUE, dec=".")
+data$classification = type.convert(data$classification, as.is=TRUE, dec=".")
+data = drop_na(data)
+data$achat_etranger = str_replace(data$achat_etranger, "Non", "0")
+data$achat_etranger = str_replace(data$achat_etranger, "Oui", "1")
+data$achat_etranger = type.convert(data$achat_etranger, as.is=TRUE, dec=".")
+```
+
+On va extraire les températures moyennes minimales de Octobre à Decembre 2021.
+
+```{r}
+temp =  read_delim("data/meteo.csv",
+    show_col_types = FALSE,              
+    delim = ";", escape_double = FALSE, trim_ws = TRUE)
+temp$date = str_extract(temp$date_obs, "2021-1")
+temp = temp[,c(-1,-5,-6)]
+temp = drop_na(temp)
+colnames(temp)[1] = "num_departement"
+colnames(data)[2] = "num_departement"
+
+temp_mean = aggregate(x= temp$tmin,     
+         by = list(temp$num_departement),      
+         FUN = mean)
+colnames(temp_mean)[1] = "num_departement"
+colnames(temp_mean)[2] = "tmin_moyen"
+data2 = merge(data, temp_mean, by = "num_departement")
+
+```
+
+Puis on va extraire les températures moyennes minimales de toute l'année 2021.
+
+```{r}
+temp2 =  read_delim("data/meteo.csv",
+    show_col_types = FALSE,              
+    delim = ";", escape_double = FALSE, trim_ws = TRUE)
+temp2$date = temp$date_obs
+temp2 = temp2[,c(-1,-5,-6)]
+temp2 = drop_na(temp2)
+colnames(temp2)[1] = "num_departement"
+
+temp_mean2 = aggregate(x= temp2$tmin,     
+         by = list(temp2$num_departement),      
+         FUN = mean)
+colnames(temp_mean2)[1] = "num_departement"
+colnames(temp_mean2)[2] = "tmin_moyen2"
+data2 = merge(data2, temp_mean2, by = "num_departement")
+```
+
+
+
+La base de données contient 105231 observations et 11 variables. On a rajouté la température minimale moyenne entre les mois d'octobre et décembre par départements.
+
+On va désormais rajouter les dose journalière acceptable par substance actives en mg/kg.
+
+```{r, include=FALSE}
+adi <- read_excel("data/adi.xlsx", sheet = "Active_Substances", 
+    col_names = FALSE)
+```
+
+Données trouvable sur ce lien:
+
+https://www.google.com/url?sa=t&rct=j&q=&esrc=s&source=web&cd=&ved=2ahUKEwic3c2e9e6EAxXIcKQEHZq0D80QFnoECBwQAQ&url=https%3A%2F%2Ffood.ec.europa.eu%2Fsystem%2Ffiles%2F2017-02%2Fpesticides_ppp_app-proc_cfs_database-201501.xlsx&usg=AOvVaw3T9gdzKeazfxDwepsVvnk6&opi=89978449
+
+On récupère l'adi (dose journalière acceptable) pour avoir un indice de toxicité pour l'être humain.
+
+```{r, include=FALSE}
+dja = list(adi$...24)
+names(dja) = "dja"
+substance = list(adi$...1)
+names(substance) = "substance"
+adi2 = data.frame(c(dja,substance))
+adi2 = drop(adi2[-1:-6,])
+adi2$dja = as.numeric(adi2$dja)
+adi2$substance = str_to_lower(adi2$substance)
+adi2$substance[215] = str_extract(adi2$substance[215], "glyphosate")
+```
+
+```{r}
+length(intersect(adi2$substance,data2$substance))
+```
+On a 145 substance en commun entre les deux bases de données.
+
+```{r, echo=FALSE}
+data3 = merge(data2, adi2, by = "substance")
+data3 = drop_na(data3)
+```
+
+```{r}
+length(unique(data3$substance))
+```
+## Nombre d'observations finales
+On a désormais 120 substances actives.
+
+Notre base de données finale contient 40 572 observations.
+
+
+## Variable à expliquer et variables explicatives
+Nous expliquons les quantitités de substances achetées à l'aide des variables explicatives suivantes: 
+- DJA, dose journalière admissible désigne la quantité de substance qui peut être quotidiennement ingérée
+par le consommateur, pendant toute la vie, sans effet néfaste pour sa santé.
+Elle s'exprime le plus souvent en milligrammes de substance active par kilogrammes de poids corporel et
+par jour (mg/kg pc/j).
+- Température minimale moyenne | températures minimales moyennes par départements à partir de
+mesures journalières en 2021. On va comparer 2 modèles, les températures de toute l’année 2021 et celles
+de octobre à décembre 2021. Le but est de mesurer l’impact du gel sur les quantités achetés. En effet, le
+gel a des fonctions de pesticides, herbicides, et fongicides.
+
+
+
+```{r}
+length(unique(data3$departement))
+```
+
+```{r}
+dja_mean = aggregate(x= data3$dja,     
+         by = list(data3$num_departement),      
+         FUN = mean)
+colnames(dja_mean)[1] = "num_departement"
+colnames(dja_mean)[2] = "dja"
+quanti_mean = aggregate(x= data3$quantite_substance,     
+         by = list(data3$num_departement),      
+         FUN = mean)
+colnames(quanti_mean)[1] = "num_departement"
+colnames(quanti_mean)[2] = "quanti"
+
+data4 = merge(quanti_mean, dja_mean, by = "num_departement")
+data4 = merge(data4, temp_mean, by = "num_departement")
+data4 = merge(data4, temp_mean2, by = "num_departement")
+```
+
+
+```{r}
+SAU <- read_excel("data/SAU.xlsx")
+SAU = drop_na(SAU[-1:-4,])
+colnames(SAU)[1] = "num_departement"
+colnames(SAU)[4] = "sau"
+
+data5 = merge(SAU[,c(1,4)], data4, by = "num_departement")
+data5$sau = type.convert(data5$sau, as.is = TRUE)
+data5$quanti_surface = with(data5, quanti/sau)
+```
+
+```{r}
+cor(data5$quanti, data5$sau)
+```
+Il y a une forte corrélation entre la quantité de substance utilisé et la surface agricole utile. La SAU est alors une variable pertinente pour pondérer la sustance agricole active.
+
+On cherche à expliquer le log des quantités de susbtances actives par hectares à l'échelle des départements en fonction de la dose journalière admissible moyenne et de la température minimale moyenne entre Octobre et Décembre 2021.
+
+```{r}
+cor(data5$quanti_surface, data5$tmin_moyen)
+cor(data5$quanti_surface, data5$tmin_moyen2)
+cor(data5$quanti_surface, data5$dja)
+```
+On a essayé de pondéré les quantités par la surface agricole utile par départements mais les corrélations restent très faibles.
+
+
+```{r}
+distrib_quanti_sur = ggplot(data5) +
+  aes(x = quanti_surface) +
+  geom_histogram(bins = 30L, fill = "#112446") +
+  labs(
+    title = "Repartition de la quantité de substance active selon la surface en hectare par départements"
+  ) +
+  theme_minimal(4L)
+
+print(distrib_quanti_sur)
+print(sd(data5$quanti_surface)^2)
+```
+
+On a la quantité par surface qui n'évolue que très peu.
+
+```{r}
+distrib_quanti = ggplot(data5) +
+  aes(x = quanti) +
+  geom_histogram(bins = 30L, fill = "#112446") +
+  labs(
+    title = "Distribution de la quantité de substance active par départements"
+  ) +
+  theme_minimal(5L)
+
+print(distrib_quanti)
+
+print(sd(data5$quanti)^2)
+```
+
+On va partir sur la quantité.
+
+```{r}
+graph1 = ggplot(data5) +
+  aes(x = tmin_moyen, y = quanti) +
+  geom_point(shape = "circle", size = 1.5, colour = "#112446") +
+  labs(
+    title = "quantité en fonction de la température minimale moyenne entre octobre et décembre"
+  ) +
+  theme_minimal(4L)
+
+print(graph1)
+
+graph2 = ggplot(data5) +
+  aes(x = dja, y = quanti) +
+  geom_point(shape = "circle", size = 1.5, colour = "#112446") +
+  labs(
+    title = "Quantité de substance active en fonction de la DJA"
+  ) +
+  theme_minimal(5L)
+
+print(graph2)
+
+graph3 = ggplot(data5) +
+  aes(x = tmin_moyen2, y = quanti) +
+  geom_point(shape = "circle", size = 1.5, colour = "#112446") +
+  labs(
+    title = "Quantité de substance active en fonction de la température minimale moyenne sur toute l'année"
+  ) +
+  theme_minimal(4L)
+
+print(graph3)
+```
+
+
+
+```{r}
+data5$t_min_sq = with(data5, tmin_moyen**2)
+data5$t_min_sq2 = with(data5, tmin_moyen2**2)
+```
+
+# STATISTIQUES DESCRIPTIVES
+
+
+```{r}
+summary(data5)
+```
+# ESTIMATION DES MOINDRES CARRES ORDINAIRES
+
+```{r}
+model_4 = lm(formula = log(quanti) ~ log(dja) + tmin_moyen + t_min_sq, data5)
+model_5 = lm(formula = log(quanti) ~ log(dja) + tmin_moyen2 + t_min_sq2, data5)
+
+model_list = list("modèle 1" = model_4, "modèle 2" = model_5)
+modelsummary(model_list, stars =  c('*'= .1, '**'=.05, '***'=0.01))
+modelplot(model_list, coef_omit = "dja|Interc") +
+  theme_minimal(7L)
+```
+On a un R2 égal à 0.0124 pour le modèle 1, la part de la variance des quantités de substance active achetée expliqué par le modèle est de 12.4%.Par contre pour le modèle 2 On a un R2 égal à 0.078, la part de la variance des quantités de substance active achetée expliqué par le modèle est de 7.8%.
+
+Les coefficients liés à la température ont à peu la même valeur mais le a2 varie moins que b2.
+
+## Choix du modèle
+```{r}
+bptest(model_4)
+```
+p-value > 0.05, on ne rejette pas l'hypothèse d'homoscédasticité.
+
+```{r}
+bptest(model_5)
+```
+p-value > 0.05, on ne rejette pas l'hypothèse d'homoscédasticité.
+
+On va partir sur le modèle 1 car son R2 est supérieur au modèle 2.
+
+Le modèle explique 17,7% de la variance du log des quantités.
+
+F = 6.595,  Fth = 8.53
+
+F < Fth, le modèle n'est pas significatif au seuil de 5%.
+
+La température minimale moyenne explique le log des quantités au seuil de 0.1%. La température minimale. Lorsque la température minimale augmente de 1°C, alors la quantité commandée augmente 1,093% - 0,172*tmin_moyen%. Donc l'augmentation de la température minimale a un impact positif sur les quantité demandé de substance jusqu'à un certain seuil.
+
+Lorsque la température augmente, il y a moins de gel. Mais à partir d'une certaine température il n'y a plus de gel donc l'impact de la température diminue.
+
+## Tests d'hypothèse
+
+```{r}
+fit_mod4 = model_4$fitted.values
+names(fit_mod4) = "fit_mod4"
+fonc_tmin = 0.666*data5$tmin_moyen - 0.05*data5$t_min_sq
+DataG = data.frame(fit_mod4,data5$tmin_moyen,log(data5$quanti),log(data5$dja), fonc_tmin)
+
+curve(0.666*x - 0.05*x^2 + 4.533, from = 0.65, to = 11.75)
+points(y = log(data5$quanti), x = data5$tmin_moyen)
+```
+
+
+
+
+La dose journalière admissible n'a pas d'impact sur les quantités demandées.
+
+
+
+Test de H1:
+
+```{r}
+graph4 = ggdensity(model_4$residuals, fill = "lightgray", add = "mean" , xlab = "résidus")
+ggpar(graph4, xlim=c(-3.5,1.5), ylim=c(0,0.65))
+shapiro_test(model_4$residuals)
+```
+P value < 0.05, on ne rejette pas l'hypothèse de non-normalité des données.
+La moyenne des erreurs est nulle
+Test de H2:
+
+```{r}
+bptest(model_4)
+```
+P value > 0.05, on ne rejette pas l'hypothèse d'homoscédasticité des données.
+Les erreurs sont homoscédastique 
+Test de H3:
+
+```{r}
+cor(data5$tmin_moyen,model_4$residuals)
+cor(data5$t_min_sq,model_4$residuals)
+cor(log(data5$dja),model_4$residuals)
+```
+Les corrélations entre les résidus et les variables sont proches de zéro.
+
+Test de H4:
+
+Au cours du processus d’homologation d’une nouvelle substance phytopharmaceutique, les scientifiques établissent la dose sans effet (DSE), c’est-à-dire la dose en dessous de laquelle ils n’observent aucun effet sur les animaux. La dose journalière admissible (DJA) est définie en divisant cette DSE par au moins 100. Possibilité d'erreur de mesure car on ne différencie pas le calcul en fonction des effets, aussi la division par 100 ne correspond pas à un calcul scientifique. Aussi, on passe d'une dose unique à une dose journalière. On peut donc questionner la DJA en tant qu'étalon de la toxicité.
+
+De plus, on ne possède pas le prix des substances actives, nécessaire à une fonction de demande.
+
+Test de H5:
+
+```{r}
+datanum = data.frame(data5$tmin_moyen,log(data5$dja))
+cor(datanum)
+```
+On observe une corrélation peu significative entre les variables.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
