@@ -16,9 +16,9 @@ This project aims to predict the quantities of active substances (pesticides) pu
 ## Problem Statement
 The following equations are used to predict the quantity of active substances purchased:
 
-\[
+$$\[
 \log(\text{quantity\_substance}_i) = \beta_0 + \beta_1 \text{classification}_i + \beta_2 \text{classification\_mention}_i + \beta_3 \text{foreign\_purchase}_i + \beta_4 \log(\text{dja}_i) + \beta_5 \text{mean\_tmin}_i + \epsilon_i
-\]
+\]$$
 
 ### Intuitions:
 - **Temperature-Related Parameters:** Higher minimum temperatures reduce frost and increase the need for phytosanitary products.
