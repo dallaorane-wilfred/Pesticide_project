@@ -1,0 +1,439 @@
+---
+title: "Pesticide"
+author: "Sofian, Baptiste, Wilfred, Souleiman"
+date: "2024-03-06"
+#output: html_document
+output: 
+  prettydoc::html_pretty:
+    theme: cayman
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, fig.width=3, fig.height=2.5,fig.pos ="ht", out.width = '50%',out.extra = "",fig.align = 'center')
+getOption('xtable.comment',TRUE)
+
+knitr::opts_chunk$set(echo = FALSE) # By default, hide code; set to TRUE to see code
+knitr::opts_chunk$set(fig.pos = 'p') # Places figures on their own pages
+knitr::opts_chunk$set(out.width = '100%', dpi=300) # Figure resolution and size
+knitr::opts_chunk$set(fig.env="figure") # Latex figure environment
+
+
+```
+
+```{r,  include=FALSE}
+library("corrplot")
+library("rstatix")
+library("ggpubr")
+library("readxl")
+library("GGally")
+library("stringr")
+library("png")
+library("jpeg")
+library("flextable")
+library("lubridate")
+library("magrittr")
+library("ggplot2")
+library("ggpubr")
+library("rticles")
+library("hrbrthemes")
+library("forcats")
+library("ggridges")
+library("cowplot")
+library("ggthemes")
+library("fmsb")
+library("wesanderson")
+library("knitr", "rmarkdown", "markdown")
+library("tidyverse")
+library("tidyr")
+library("dplyr")
+library("plotly")
+library("paletteer")
+library("extrafont")
+library("kableExtra")
+library('data.table')
+library("readxl")
+library("jtools")
+library("ggrepel")
+library("fastDummies")
+library("xtable")
+library("sjPlot")
+library("sjmisc")
+library("sjlabelled")
+library("lmtest")
+library("modelsummary")
+library("kableExtra")
+library("gt")
+library("esquisse")
+
+
+tz <- Sys.timezone()
+
+
+```
+
+# PROBLEM STATEMENT
+Prediction of the quantities of active substances purchased based on their attributes and climate data.
+Equation to estimate:
+$$ \ log(quantite\ substance_i)=\beta_0+\beta_1\ classification_i+\beta_2\ classification\ mention\ +\beta_3\  achat\ etranger_i + \beta_4\ log(dja_i)\ + \beta_5\ tmin moyen_i + \epsilon_i $$
+$$ \ log(quantite\ substance_i)=\alpha_0+\alpha_1\ log(dja_i)+\alpha_2\ tminmoyen_i\ +\alpha_3\  tminmoyen^2_i + \omicron_i $$
+
+
+$$ \ log(quantite\ substance_i)=\beta_0+\beta_1\ log(dja_i)+\beta_2\ tminmoyen2_i\ +\beta_3\  tminmoyen2^2_i + \epsilon_i $$
+Intuitions:
+
+-Parameters related to temperature are positive: the higher the minimum temperature, the less frost, so there is a need for more phytosanitary products.
+-Parameters related to toxicity are positive: the higher the ADI (Acceptable Daily Intake), the more substances can be ingested without harmful effects, so there is less reluctance to order more.
+
+## DATA
+We will import our data and build the database.
+
+## Sources
+Data import
+```{r}
+data <- read_delim("data/BNVD_TRACABILITE_20221018_ACHAT_DPT_SUBSTANCE_2021.csv",  delim = ";", escape_double = FALSE, col_types = cols(quantite_substance = col_number()),  trim_ws = TRUE)
+
+```
+
+The database contains 108,822 observations and 10 variables. It is a summary of agricultural product purchases in France in 2021.
+
+## Building the Database
+```{r}
+print(unique(data$code_departement))
+
+```
+
+
+```{r}
+datasummary_skim(data, "categorical", output = "default")
+datasummary_skim(data)
+
+```
+We convert the variables "classification_mention" and "classification" into numeric variables
+
+```{r}
+data["classification_mention"][is.na(data["classification_mention"])] <- "0"
+data$classification_mention = str_replace(data$classification_mention, "Substitution", "2.5")
+data$classification_mention = str_replace(data$classification_mention, "Exclusion", "5")
+
+data$classification = str_replace(data$classification, "CMR", "9")
+data$classification = str_replace(data$classification, "Santé A", "5.1")
+data$classification = str_replace(data$classification, "Env A", "3")
+data$classification = str_replace(data$classification, "Env B", "0.9")
+data$classification = str_replace(data$classification, "Autre", "0")
+data$classification_mention = type.convert(data$classification_mention, as.is=TRUE, dec=".")
+data$classification = type.convert(data$classification, as.is=TRUE, dec=".")
+data = drop_na(data)
+data$achat_etranger = str_replace(data$achat_etranger, "Non", "0")
+data$achat_etranger = str_replace(data$achat_etranger, "Oui", "1")
+data$achat_etranger = type.convert(data$achat_etranger, as.is=TRUE, dec=".")
+
+```
+
+We will extract the average minimum temperatures from October to December 2021.
+
+```{r}
+temp =  read_delim("data/meteo.csv",
+    show_col_types = FALSE,              
+    delim = ";", escape_double = FALSE, trim_ws = TRUE)
+temp$date = str_extract(temp$date_obs, "2021-1")
+temp = temp[,c(-1,-5,-6)]
+temp = drop_na(temp)
+colnames(temp)[1] = "num_departement"
+colnames(data)[2] = "num_departement"
+
+temp_mean = aggregate(x= temp$tmin,     
+         by = list(temp$num_departement),      
+         FUN = mean)
+colnames(temp_mean)[1] = "num_departement"
+colnames(temp_mean)[2] = "tmin_moyen"
+data2 = merge(data, temp_mean, by = "num_departement")
+
+```
+
+We then extract the average minimum temperatures for the whole year 2021.
+
+```{r}
+temp2 =  read_delim("data/meteo.csv",
+    show_col_types = FALSE,              
+    delim = ";", escape_double = FALSE, trim_ws = TRUE)
+temp2$date = temp$date_obs
+temp2 = temp2[,c(-1,-5,-6)]
+temp2 = drop_na(temp2)
+colnames(temp2)[1] = "num_departement"
+
+temp_mean2 = aggregate(x= temp2$tmin,     
+         by = list(temp2$num_departement),      
+         FUN = mean)
+colnames(temp_mean2)[1] = "num_departement"
+colnames(temp_mean2)[2] = "tmin_moyen2"
+data2 = merge(data2, temp_mean2, by = "num_departement")
+```
+The database now contains 105,231 observations and 11 variables. We have added the average minimum temperature between October and December by department.
+
+Now we will add the Acceptable Daily Intake (ADI) for active substances in mg/kg.
+
+
+```{r, include=FALSE}
+adi <- read_excel("data/adi.xlsx", sheet = "Active_Substances", 
+    col_names = FALSE)
+```
+
+Data can be found at this link:
+
+https://www.google.com/url?sa=t&rct=j&q=&esrc=s&source=web&cd=&ved=2ahUKEwic3c2e9e6EAxXIcKQEHZq0D80QFnoECBwQAQ&url=https%3A%2F%2Ffood.ec.europa.eu%2Fsystem%2Ffiles%2F2017-02%2Fpesticides_ppp_app-proc_cfs_database-201501.xlsx&usg=AOvVaw3T9gdzKeazfxDwepsVvnk6&opi=89978449
+
+We retrieve the ADI to have a toxicity index for humans.
+
+```{r, include=FALSE}
+dja = list(adi$...24)
+names(dja) = "dja"
+substance = list(adi$...1)
+names(substance) = "substance"
+adi2 = data.frame(c(dja,substance))
+adi2 = drop(adi2[-1:-6,])
+adi2$dja = as.numeric(adi2$dja)
+adi2$substance = str_to_lower(adi2$substance)
+adi2$substance[215] = str_extract(adi2$substance[215], "glyphosate")
+```
+
+```{r}
+length(intersect(adi2$substance,data2$substance))
+
+```
+We have 145 substances in common between the two datasets.
+
+```{r, echo=FALSE}
+data3 = merge(data2, adi2, by = "substance")
+data3 = drop_na(data3)
+```
+
+```{r}
+length(unique(data3$substance))
+```
+## Final number of observations
+We now have 120 active substances.
+
+Our final database contains 40,572 observations.
+
+## Dependent variable and explanatory variables
+We explain the quantities of substances purchased using the following explanatory variables:
+
+-ADI: Acceptable Daily Intake refers to the amount of a substance that can be ingested daily by a consumer throughout life without harmful effects on health. It is typically expressed in milligrams of active substance per kilogram of body weight per day (mg/kg bw/day).
+-Average minimum temperature: Average minimum temperatures by department based on daily measurements in 2021. We will compare two models, one using temperatures for the whole year and the other for October to December 2021. The goal is to measure the impact of frost on quantities purchased. Frost has functions similar to pesticides, herbicides, and fungicides.
+
+
+```{r}
+length(unique(data3$departement))
+```
+
+```{r}
+dja_mean = aggregate(x= data3$dja,     
+         by = list(data3$num_departement),      
+         FUN = mean)
+colnames(dja_mean)[1] = "num_departement"
+colnames(dja_mean)[2] = "dja"
+quanti_mean = aggregate(x= data3$quantite_substance,     
+         by = list(data3$num_departement),      
+         FUN = mean)
+colnames(quanti_mean)[1] = "num_departement"
+colnames(quanti_mean)[2] = "quanti"
+
+data4 = merge(quanti_mean, dja_mean, by = "num_departement")
+data4 = merge(data4, temp_mean, by = "num_departement")
+data4 = merge(data4, temp_mean2, by = "num_departement")
+```
+
+
+```{r}
+SAU <- read_excel("data/SAU.xlsx")
+SAU = drop_na(SAU[-1:-4,])
+colnames(SAU)[1] = "num_departement"
+colnames(SAU)[4] = "sau"
+
+data5 = merge(SAU[,c(1,4)], data4, by = "num_departement")
+data5$sau = type.convert(data5$sau, as.is = TRUE)
+data5$quanti_surface = with(data5, quanti/sau)
+```
+
+```{r}
+cor(data5$quanti, data5$sau)
+```
+
+There is a strong correlation between the quantity of substance used and the useful agricultural area. SAU is thus a relevant variable for weighting the active agricultural substance.
+
+We aim to explain the log of active substances purchased per hectare at the department level based on the average Acceptable Daily Intake and the average minimum temperature between October and December 2021.
+
+
+```{r}
+cor(data5$quanti_surface, data5$tmin_moyen)
+cor(data5$quanti_surface, data5$tmin_moyen2)
+cor(data5$quanti_surface, data5$dja)
+```
+We tried to weight the quantities by the useful agricultural area per department, but the correlations remain very weak.
+
+```{r}
+distrib_quanti_sur = ggplot(data5) +
+  aes(x = quanti_surface) +
+  geom_histogram(bins = 30L, fill = "#112446") +
+  labs(
+    title = "Repartition de la quantité de substance active selon la surface en hectare par départements"
+  ) +
+  theme_minimal(4L)
+
+print(distrib_quanti_sur)
+print(sd(data5$quanti_surface)^2)
+```
+The quantity per surface area shows very little variation.
+
+
+```{r}
+distrib_quanti = ggplot(data5) +
+  aes(x = quanti) +
+  geom_histogram(bins = 30L, fill = "#112446") +
+  labs(
+    title = "Distribution de la quantité de substance active par départements"
+  ) +
+  theme_minimal(5L)
+
+print(distrib_quanti)
+
+print(sd(data5$quanti)^2)
+```
+
+We will use the quantity variable.
+
+```{r}
+graph1 = ggplot(data5) +
+  aes(x = tmin_moyen, y = quanti) +
+  geom_point(shape = "circle", size = 1.5, colour = "#112446") +
+  labs(
+    title = "quantité en fonction de la température minimale moyenne entre octobre et décembre"
+  ) +
+  theme_minimal(4L)
+
+print(graph1)
+
+graph2 = ggplot(data5) +
+  aes(x = dja, y = quanti) +
+  geom_point(shape = "circle", size = 1.5, colour = "#112446") +
+  labs(
+    title = "Quantité de substance active en fonction de la DJA"
+  ) +
+  theme_minimal(5L)
+
+print(graph2)
+
+graph3 = ggplot(data5) +
+  aes(x = tmin_moyen2, y = quanti) +
+  geom_point(shape = "circle", size = 1.5, colour = "#112446") +
+  labs(
+    title = "Quantité de substance active en fonction de la température minimale moyenne sur toute l'année"
+  ) +
+  theme_minimal(4L)
+
+print(graph3)
+```
+
+
+
+```{r}
+data5$t_min_sq = with(data5, tmin_moyen**2)
+data5$t_min_sq2 = with(data5, tmin_moyen2**2)
+```
+
+# DESCRIPTIVE STATISTICS
+
+```{r}
+summary(data5)
+```
+
+# ORDINARY LEAST SQUARES ESTIMATION
+```{r}
+model_4 = lm(formula = log(quanti) ~ log(dja) + tmin_moyen + t_min_sq, data5)
+model_5 = lm(formula = log(quanti) ~ log(dja) + tmin_moyen2 + t_min_sq2, data5)
+
+model_list = list("modèle 1" = model_4, "modèle 2" = model_5)
+modelsummary(model_list, stars =  c('*'= .1, '**'=.05, '***'=0.01))
+modelplot(model_list, coef_omit = "dja|Interc") +
+  theme_minimal(7L)
+```
+We have an R2 of 0.0124 for model 1, meaning the model explains 12.4% of the variance in active substance quantities purchased. For model 2, we have an R2 of 0.078, explaining 7.8% of the variance.
+
+The temperature-related coefficients are similar in value, but the variation in α2 is less than in β2.
+
+## Model Selection
+```{r}
+bptest(model_4)
+```
+p-value > 0.05, we do not reject the hypothesis of homoscedasticity.
+
+```{r}
+bptest(model_5)
+```
+p-value > 0.05, we do not reject the hypothesis of homoscedasticity.
+
+We will go with model 1 since its R2 is higher than model 2.
+
+The model explains 17.7% of the variance in the log of quantities.
+
+F = 6.595, Fth = 8.53
+
+F < Fth, meaning the model is not significant at the 5% threshold.
+
+The average minimum temperature explains the log of quantities at the 0.1% threshold. When the minimum temperature increases by 1°C, the quantity ordered increases by 1.093% - 0.172*tmin_moyen%. Thus, the increase in minimum temperature positively impacts the quantity demanded up to a certain threshold.
+
+When temperature increases, there is less frost, but after a certain point, frost no longer occurs, so the temperature’s impact diminishes.
+
+## Hypothesis Testing
+```{r}
+fit_mod4 = model_4$fitted.values
+names(fit_mod4) = "fit_mod4"
+fonc_tmin = 0.666*data5$tmin_moyen - 0.05*data5$t_min_sq
+DataG = data.frame(fit_mod4,data5$tmin_moyen,log(data5$quanti),log(data5$dja), fonc_tmin)
+
+curve(0.666*x - 0.05*x^2 + 4.533, from = 0.65, to = 11.75)
+points(y = log(data5$quanti), x = data5$tmin_moyen)
+```
+The ADI does not impact the quantities demanded.
+
+Test H1:
+```{r}
+graph4 = ggdensity(model_4$residuals, fill = "lightgray", add = "mean" , xlab = "résidus")
+ggpar(graph4, xlim=c(-3.5,1.5), ylim=c(0,0.65))
+shapiro_test(model_4$residuals)
+```
+
+
+
+P-value < 0.05, we do not reject the hypothesis of non-normality. The mean of errors is zero.
+
+Test H2:
+```{r}
+bptest(model_4)
+```
+P-value > 0.05, we do not reject the hypothesis of homoscedasticity. The errors are homoscedastic.
+
+Test H3:
+
+```{r}
+cor(data5$tmin_moyen,model_4$residuals)
+cor(data5$t_min_sq,model_4$residuals)
+cor(log(data5$dja),model_4$residuals)
+```
+The correlations between residuals and variables are close to zero.
+
+Test H4:
+
+During the process of approving a new phytopharmaceutical substance, scientists establish the No-Effect Dose (DSE), which is the dose below which no effects are observed in animals. The ADI is defined by dividing this DSE by at least 100. There may be measurement errors because the calculation does not differentiate effects, and dividing by 100 is not a scientific calculation. Also, we shift from a single dose to a daily dose. Therefore, the ADI as a toxicity standard can be questioned.
+
+Additionally, we do not have the price of active substances, which is necessary for a demand function.
+
+Test H5:
+```{r}
+datanum = data.frame(data5$tmin_moyen,log(data5$dja))
+cor(datanum)
+```
+There is an insignificant correlation between the variables.
+
